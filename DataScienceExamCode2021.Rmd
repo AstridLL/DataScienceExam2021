@@ -1,0 +1,760 @@
+---
+title: "Data Science Exam 2021"
+author: "Astrid L."
+date: "27/5/2021"
+output: html_document
+---
+
+# Data Science Exam Project 
+# Astrid Lang Ledager
+# Study no. 201604632
+
+# All code used for the exam projet is collected in this R markdown file
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/DsExamProj")
+#setwd("~/Desktop/DsExamProj")
+#getwd()
+```
+
+# setwd and load data
+```{r}
+# wd and load data
+setwd("~/Desktop/DsExamProj")
+d <- read.csv("NewCampData1.1.csv", header = TRUE, sep = ",")
+df <- d # make copy to work with
+
+```
+
+# load packages
+```{r}
+library(dplyr)
+library(tidyr)
+library(fpp3)
+library(tidyverse)
+library(lubridate)
+library(zoo)
+library(tsibble)
+library(fabletools)
+library(magrittr)
+
+```
+
+
+##### Prepare data
+
+# wrangle data to the right format
+```{r}
+# Data wrangle
+# change format
+df1 <- df %>%
+gather(key, value, X1992:X2021) #%>%
+
+# order columns
+df1 <- df1[, c(5, 4, 1, 2, 3,6)]
+
+# Delete X from year column - replace first chracter with empty string ""
+df1$key <- gsub("^.{0,1}", "", df1$key)
+
+# Merge year and month columns
+## First make months into numbers 
+df1$Month <- as.integer(factor(df1$Month, levels = month.name))
+# Merge year and month information to one column
+df1$Observations <- as.Date(as.yearmon(paste(df1$key, df1$Month), "%Y %m"))
+
+# Delete data from 2021, as data is incomplete
+df1 <- df1[!grepl("^2021.*", df1$Observations),] 
+
+# Update df - reorder order of vars, and drop seperate month and year cols
+df2 <- df1[, c(7, 3, 4, 5, 6)] # 2001-01-01 format
+
+# Rename variables
+df2 <- df2 %>% 
+  rename(
+    count = value
+    )
+
+# save df
+#setwd("~/Desktop/DsExamProj")
+#write.csv(df2, "Camp_site_data_1.csv", row.names=FALSE, quote=FALSE) 
+#data <- read.csv("Camp_site_data_1.csv", header = TRUE, sep = ",")
+```
+
+# Turn df into tsibble, transform to quarterly observations 
+```{r}
+# Make df into tsibble with index and keys, and use quarterly observations
+df3 <- df2 %>%
+  mutate(Quarter = yearquarter(Observations)) %>%
+  select(-Observations) %>% 
+  group_by(Quarter, TypeStay, GuestNationality, Region) %>% 
+  summarize(count = sum(count), .groups = 'keep') %>% #mean() to get monthly avg.
+  as_tsibble(key = c(TypeStay, GuestNationality, Region),
+             index = Quarter)
+
+# This step is somewhat redundant... It just updates key and index for a tsibble (It is already grouped by the right index and keys, but it might be nice to have for another time)
+df4 <- update_tsibble(
+  df3,
+  key = c(TypeStay, GuestNationality, Region),
+  index = Quarter,
+  regular = TRUE, #is_regular(x),
+  validate = TRUE,
+  .drop = TRUE #key_drop_default(x)
+)
+```
+
+
+
+#### Exploratoy analysis and visualizations 
+
+# Plot the data 
+```{r}
+# plotting the data
+NightsTotalAllDK <- df4 %>%
+  filter(TypeStay == "Nights stay", GuestNationality == "Total", Region == "All Denmark") %>%
+  mutate(count = count/1000000) # measured in millions 
+autoplot(NightsTotalAllDK, count) +
+  labs(title = "Total Campsite Guests",
+       subtitle = "Total nights spent at campsites in all of Denmark",
+       y = "Nights (millions)")
+
+```
+
+#Seasonal Plot 
+```{r}
+# seasonal plot of total guests, all DK
+NightsTotalAllDK  %>%
+  gg_season(count, labels = "both") +
+  labs(y = "Nights (millions)",
+       title = "Seasonal plot: Total Campsite Guests",
+         subtitle = "Total nights spent at campsites in all of Denmark") +
+  expand_limits(x = ymd(c("1992 Q1", "2020 Q4")))
+```
+
+# seasonal subseries plots
+```{r}
+# Seasonal subseries plots
+# #An alternative plot that emphasises the seasonal patterns is where the data for each season are collected together in separate mini time plots. - Forecasting, Ch. 2.5
+NightsTotalAllDK  %>%
+  gg_subseries(count) +
+  labs(
+    y = "Nights (millions)",
+    title = "Seasonal subseries plots: Total Campsite Guests",
+         subtitle = "Total nights spent at campsites in all of Denmark"
+  )
+```
+
+# Make tsibble with DK guests, nights stay, and count summed by each region (minus all of DK) 
+```{r}
+# Make tsibble with DK guests, nights stay, and count summed by each region. 
+NightsDanishByRegion <- df4 %>%
+  filter(TypeStay == "Nights stay", GuestNationality == "Denmark") %>%
+  group_by(Region) %>%
+  summarise(count = sum(count))
+NightsDanishByRegion
+
+# Minus All Denmark
+NightsDanishByRegion_NotAll <- df4 %>%
+  filter(TypeStay == "Nights stay", GuestNationality == "Denmark", !(Region == "All Denmark")) %>%
+  group_by(Region) %>%
+  summarise(count = sum(count))
+NightsDanishByRegion_NotAll
+
+```
+
+# Plot Danish guests' nights stay for each region (see tsibble above)
+```{r}
+# Make plot of danish guests, nights by each region (see tsibble above)
+autoplot(NightsDanishByRegion_NotAll, count) +
+  labs(y = "Nights stay",
+       title = "Danish campsite guests in Denmark")
+```
+
+# seasonal plot for DK guests by region 
+```{r}
+# To see the timing of the seasonal peaks in each region, we can use a season plot
+gg_season(NightsDanishByRegion_NotAll, count) +
+  labs(y = "Nights stay",
+       title = "Danish campsite guests in Denmark")
+
+```
+
+# Corresponding subseries plots - DK guests by region 
+```{r}
+NightsDanishByRegion_NotAll %>%
+  gg_subseries(count) +
+  labs(y = "Nights stay",
+       title = "Danish campsite guests in Denmark")
+```
+
+# Testing same plots as above, but grouped by guestnationality instead of region (total of guests excluded)
+```{r}
+# Make tsibble with nights stay in all of DK, and count summed by each guest nationality 
+NightsAllDKByGuestNationality <- df4 %>%
+  filter(TypeStay == "Nights stay", Region == "All Denmark") %>%
+  group_by(GuestNationality) %>%
+  summarise(count = sum(count)) %>%
+  mutate(count = count/1000000)
+NightsAllDKByGuestNationality
+
+# By nationality, minus total of guests
+NightsAllDKByGuestNationality_NotTotal <- df4 %>%
+  filter(TypeStay == "Nights stay", Region == "All Denmark", !(GuestNationality == "Total")) %>%
+  group_by(GuestNationality) %>%
+  summarise(count = sum(count)) %>%
+  mutate(count = count/1000000)
+NightsAllDKByGuestNationality_NotTotal
+
+```
+
+# Make plot of nights all over DK by guest nationalities (see tsibble above)
+```{r}
+autoplot(NightsAllDKByGuestNationality_NotTotal, count) +
+  labs(y = "Nights (millions)",
+       title = "Campsite Guests By Nationality", 
+       subtitle = "Total nights spent at campsites in all of denmark grouped by each guest nationality")
+```
+
+# Seasonal plot - by guest nationality
+```{r}
+# To see the timing of the seasonal peaks for each guest nationality, we can use a season plot
+gg_season(NightsAllDKByGuestNationality_NotTotal, count) +
+  labs(y = "Nights (millions)",
+       title = "Seasonal Plot: Campsite Guests By Nationality", 
+       subtitle = "Total nights spent at campsites in all of denmark grouped by each guest nationality")
+```
+
+# Corresponding sub-series plots - by guest nationality
+```{r}
+# Corresponding subseries plots
+NightsAllDKByGuestNationality_NotTotal %>%
+  gg_subseries(count) +
+ labs(y = "Nights (millions)", #OR MAYBE "NIGHTLT ACCOMODATIONS (MILLIONS)"
+       title = "Seasonal Subseries Plots: Campsite Guests By Nationality", 
+       subtitle = "Total nights spent at campsites in all of denmark grouped by each guest nationality")
+```
+
+# For exploration - Make tsibble with all regions in permanent camping slots, and count summed by each guest nationality.
+```{r}
+# Make tsibble with all regions in permanent camping slots, and count summed by each guest nationality. 
+PermanentCampingAllDKByGuestNationality_NotTotal <- df4 %>%
+  filter(TypeStay == "Here of in permanent camping slot", Region == "All Denmark", !(GuestNationality == "Total"), !(GuestNationality == "Denmark")) %>%
+  group_by(GuestNationality) %>%
+  summarise(count = sum(count))
+PermanentCampingAllDKByGuestNationality_NotTotal
+
+# Make tsibble with DK guests in permanent camping slots, and count summed by each region. 
+PermanentCampingDanishByRegion_NotAll <- df4 %>%
+  filter(TypeStay == "Here of in permanent camping slot", GuestNationality == "Denmark", !(Region == "All Denmark")) %>%
+  group_by(Region) %>%
+  summarise(count = sum(count))
+PermanentCampingDanishByRegion_NotAll
+```
+
+# Plots of nights stayed at permanent camping slots by guest nationality and region
+```{r}
+# by guest nationality 
+# Make plot of nights in permanent camping slots all over DK by guest nationalities
+autoplot(PermanentCampingAllDKByGuestNationality_NotTotal, count) +
+  labs(y = "Nights in permanent camping slot",
+       title = "Campsite guests in permanent camping slots in all of Denmark")
+
+# by region
+# Make plot of Danish guests' nights in permanent camping slots by each region
+autoplot(PermanentCampingDanishByRegion_NotAll, count) +
+  labs(y = "Nights in permanent camping slot",
+       title = "Danish campsite guests in permanent camping slots")
+
+
+# looks like most foreign guests in permanent camping slots are Germans 
+```
+
+# Seasonal plots of permanent camping slots: To see the timing of the seasonal peaks for each guest nationality and region
+```{r}
+# for guest nationality
+gg_season(PermanentCampingAllDKByGuestNationality_NotTotal, count) +
+  labs(y = "Nights in permanent camping slot",
+       title = "Campsite guests in permanent camping slots in all of Denmark")
+
+# For regions 
+gg_season(PermanentCampingDanishByRegion_NotAll, count) +
+  labs(y = "Nights in permanent camping slot",
+       title = "Danish campsite guests in permanent camping slots")
+
+```
+
+# Corresponding subseries plots - of permanent camping slots by guest natinality and region
+```{r}
+# Corresponding subseries plots: guest nationalities
+PermanentCampingAllDKByGuestNationality_NotTotal %>%
+  gg_subseries(count) +
+  labs(y = "Nights in permanent camping slot",
+       title = "Campsite guests in permanent camping slots in all of Denmark")
+
+# Corresponding subseries plots: guest regions
+PermanentCampingDanishByRegion_NotAll %>%
+  gg_subseries(count) +
+  labs(y = "Nights in permanent camping slot",
+       title = "Danish campsite guests in permanent camping slots")
+
+```
+
+# check data
+# Lagged scatterplot - to check for randomness, autocorrelation, outliers, etc. 
+```{r}
+NightsTotalAllDK <- df4 %>%
+  filter(TypeStay == "Nights stay", Region == "All Denmark", GuestNationality == "Total") 
+NightsTotalAllDK_recent <- NightsTotalAllDK %>%
+  filter(year(Quarter) >= 2010)
+NightsTotalAllDK_recent %>%
+  gg_lag(count, geom = "point") +
+  labs(x = "lag(Nights, k)")
+```
+
+# A look at the correlations in each series could reveal structures which are difficult to identify in the seasonal plots.
+```{r}
+NightsAllDKByGuestNationality %>%
+  ACF(count)
+
+# use with autoplot to show the correlations along with a threshold for significance (controllable with the level argument).
+NightsAllDKByGuestNationality %>%
+  ACF(count) %>%
+  autoplot()
+```
+
+# Find the time series with the highest mean number of guests 
+```{r}
+mean_df4 = df4 %>%
+features(count, list(mean = mean))%>%
+arrange(desc(mean))
+
+mean_df4$ID <- as.numeric(row.names(mean_df4))
+mean_df4
+# highest mean number of guests is nights stay, Total, All DK -> obviously as this is the totalled variables. 
+
+#plot of mean number of guests across various time series
+allmean_plot = ggplot(mean_df4, aes(x = ID,y=mean)) + geom_point() + 
+                      labs(y = "Mean number of guests",
+                      title = "Mean number of guests for every time series")
+allmean_plot
+
+# There are great differences btw mean number of guests between the first and the second, and the third, and then the remaining mean number of guests. This makes sense bc the first is for the nights stay, total/all types of guests, and for all of Denmark. The second dot represents nights stay for Danes in all of Denmark, while the third represents the total of all guests in all of denmark who is staying in permanent slots. Number four is actually nights stay for all types of guests in Region Syddanmark.
+
+```
+
+
+# Testing transformations, decomposition, and normality of data
+```{r}
+# PERFORM TRANSFORMATIONS OF DATA 
+# log transform data
+NightsTotalAllDK_log  <- NightsTotalAllDK %>%
+  mutate(count = log(count)) %>%
+  as_tsibble(key = c(TypeStay, GuestNationality, Region),
+             index = Quarter)
+
+# box_cox transform data - with gurrero method to choose lambda value # lambda value = -0.74
+lambda <- NightsTotalAllDK %>%
+  features(count, features = guerrero) %>%
+  pull(lambda_guerrero)
+
+NightsTotalAllDK_boxcox  <- NightsTotalAllDK %>%
+  mutate(count = box_cox(count, lambda)) %>%
+  as_tsibble(key = c(TypeStay, GuestNationality, Region),
+             index = Quarter)
+
+
+#### STL DECOMPOSITION 
+# STL decomposition of ordinary data
+NightsTotalAllDK_STL <- NightsTotalAllDK %>%
+  model(STL(count ~ season(window = 5),
+            robust = FALSE))
+components(NightsTotalAllDK_STL) 
+
+# STL decomposition of log transformed data
+ NightsTotalAllDK_log_STL <- NightsTotalAllDK_log %>%
+  model(stl = STL(count))
+ components(NightsTotalAllDK_log_STL)
+
+# STL decomposition of box_cox transformed data
+ NightsTotalAllDK_boxcox_STL <- NightsTotalAllDK_boxcox %>%
+  model(stl = STL(count))
+components( NightsTotalAllDK_boxcox_STL)
+
+##### STL PLOTS OF ORDNIARY AND TRANSFORMED DATA
+# Ordinary
+# The trend column (containing the trend-cycle) follows the overall movement of the series, ignoring any seasonality and random fluctuations
+components(NightsTotalAllDK_STL) %>%
+  as_tsibble() %>%
+  autoplot(count, colour="gray") +
+  geom_line(aes(y=trend), colour = "lightpink2") +
+  labs(
+    y = "Nights (millions)",
+    title = "Total Campsite Guests in All of Denmark - Trend"
+  )
+
+# LOG transformed data
+# The trend column (containing the trend-cycle) follows the overall movement of the series, ignoring any seasonality and random fluctuations
+components(NightsTotalAllDK_log_STL) %>%
+  as_tsibble() %>%
+  autoplot(count, colour="gray") +
+  geom_line(aes(y=trend), colour = "lightpink2") +
+  labs(
+    y = "Nights (millions)",
+    title = "LOG: Total Campsite Guests in All of Denmark - Trend"
+  )
+
+# BOXCOX Transformed data
+# The trend column (containing the trend-cycle) follows the overall movement of the series, ignoring any seasonality and random fluctuations
+components(NightsTotalAllDK_boxcox_STL) %>%
+  as_tsibble() %>%
+  autoplot(count, colour="gray") +
+  geom_line(aes(y=trend), colour = "lightpink2") +
+  labs(
+    y = "Nights (millions)",
+    title = "BOXCOX: Total Campsite Guests in All of Denmark - Trend"
+  )
+
+###### STL SUMMARY
+# We can plot all of the components in a single figure using autoplot()
+
+# Ordinary data
+components(NightsTotalAllDK_STL) %>% autoplot()
+
+# LOG transformed data
+components(NightsTotalAllDK_log_STL) %>% autoplot()
+
+# BOXCOX transformed data
+components(NightsTotalAllDK_boxcox_STL) %>% autoplot()
+
+##### CHECK FOR NORMALITY BY QQ PLOTS
+
+# QQ plot - ordinary data
+qqnorm(NightsTotalAllDK$count)
+qqline(NightsTotalAllDK$count)
+
+# QQ plot - log
+qqnorm(NightsTotalAllDK_log$count)
+qqline(NightsTotalAllDK_log$count)
+
+# QQ plot - Box cox
+qqnorm(NightsTotalAllDK_boxcox$count)
+qqline(NightsTotalAllDK_boxcox$count)
+
+```
+
+# plot seasonally adjusted data 
+```{r}
+# seasonally adjusted data
+components(NightsTotalAllDK_STL) %>%
+  as_tsibble() %>%
+  autoplot(count, colour = "gray") +
+  geom_line(aes(y=season_adjust), colour = "olivedrab4") +
+  labs(y = "Nights (millions)",
+       title = "Total Campsite Guests in All of Denmark - Seasonally adjusted")
+```
+
+# STL decomposition for different guest nationality data
+```{r}
+# apply STL decomposition  
+NightsAllDKByGuestNationality_NotTotal_STL <- NightsAllDKByGuestNationality_NotTotal %>%
+  model(stl = STL(count))
+components(NightsAllDKByGuestNationality_NotTotal_STL)
+
+# We can plot all of the components in a single figure using autoplot()
+components(NightsAllDKByGuestNationality_NotTotal_STL) %>% autoplot()
+```
+
+# Exploring additional STL features (strongest and weakest seasonality & most and least trended time series )
+```{r}
+#More STL features
+# Plot the time series with the strongest seasonality
+max_seasonality_ts <- df4 %>%
+  features(count, feat_stl) %>%
+ filter(!is.na(seasonal_strength_year)) %>%
+  filter(
+    seasonal_strength_year == max(seasonal_strength_year)
+  ) %>%
+  left_join(df4, by = c("TypeStay", "Region", "GuestNationality")) %>%
+  ggplot(aes(x = Quarter, y = count)) +
+  geom_line() +
+  facet_grid(vars(TypeStay, Region , GuestNationality)) +
+    labs(y = "Nights",
+       title = "Time series w the strongest seasonality")
+max_seasonality_ts # Permanent slot, All of DK, Danes 
+
+# Plot the time series with the weakest seasonality
+min_seasonality_ts <- df4 %>%
+  features(count, feat_stl) %>%
+ filter(!is.na(seasonal_strength_year)) %>%
+  filter(
+    seasonal_strength_year == min(seasonal_strength_year)
+  ) %>%
+  left_join(df4, by = c("TypeStay", "Region", "GuestNationality")) %>%
+  ggplot(aes(x = Quarter, y = count)) +
+  geom_line() +
+  facet_grid(vars(TypeStay, Region , GuestNationality)) + 
+  labs(y = "Nights",
+       title = "Time series w the weakest seasonality")
+min_seasonality_ts # Permanent slot, Region Syddanmark, Swedes
+
+# Plot the time series with the greatest trend
+max_trend_ts <- df4 %>%
+  features(count, feat_stl) %>%
+ filter(!is.na(seasonal_strength_year)) %>%
+  filter(
+    trend_strength == max(trend_strength)
+  ) %>%
+  left_join(df4, by = c("TypeStay", "Region", "GuestNationality")) %>%
+  ggplot(aes(x = Quarter, y = count)) +
+  geom_line() +
+  facet_grid(vars(TypeStay, Region , GuestNationality)) + 
+  labs(y = "Nights",
+       title = "Time series w the greatest trend")
+max_trend_ts #Most trended ts is Permanent slot, Region Nordjylland, Danes
+
+# Plot the time series that are the least trended
+min_trend_ts <- df4 %>%
+  features(count, feat_stl) %>%
+ filter(!is.na(seasonal_strength_year)) %>%
+  filter(
+    trend_strength == min(trend_strength)
+  ) %>%
+  left_join(df4, by = c("TypeStay", "Region", "GuestNationality")) %>%
+  ggplot(aes(x = Quarter, y = count)) +
+  geom_line() +
+  facet_grid(vars(TypeStay, Region , GuestNationality)) + 
+  labs(y = "Nights",
+       title = "Least trended time series")
+min_trend_ts # least trended ts is nights stay, Region syddanmark, all guests/total
+
+# display these four plots
+library(gridExtra)
+grid.arrange(max_seasonality_ts, min_seasonality_ts, max_trend_ts, min_trend_ts, nrow = 2)
+```
+
+# More plots of STL features 
+```{r}
+# Plot strength of trend and seasonality for guest nationality
+df4_TSplot1 <- df4 %>%
+  features(count, feat_stl) %>%
+  ggplot(aes(x = trend_strength, y = seasonal_strength_year,
+             col = GuestNationality)) +
+  geom_point() +
+  coord_equal() +
+  lims(x = c(0,1), y = c(0,1))
+df4_TSplot1
+
+# Plot strength of trend and seasonality for guest nationality in each region
+df4_TSplot2 <- df4 %>%
+  features(count, feat_stl) %>%
+  ggplot(aes(x = trend_strength, y = seasonal_strength_year,
+             col = GuestNationality)) +
+  geom_point() +
+  facet_wrap(vars(Region))
+df4_TSplot2
+
+# Plot strength of trend and seasonality for nights versus permanent camping slot by each guest nationality 
+df4_TSplot3 <- df4 %>%
+  features(count, feat_stl) %>%
+  ggplot(aes(x = trend_strength, y = seasonal_strength_year,
+             col = TypeStay)) +
+  geom_point() +
+  facet_wrap(vars(GuestNationality))
+df4_TSplot3
+
+# Plot strength of trend and seasonality for guest nationality in each region and by overall nights or permanent camp slot accomodation. 
+df4_TSplot4 <- df4 %>%
+  features(count, feat_stl) %>%
+  ggplot(aes(x = trend_strength, y = seasonal_strength_year,
+             col = GuestNationality, shape = TypeStay)) +
+  geom_point() +
+  facet_wrap(vars(Region))
+df4_TSplot4
+
+# Not surprisingly  there is strong seasonality for all regions and all guest groups 
+# - except for the Swedes which do not seem as seasonal as eveeryone else. 
+
+```
+
+
+##### FITTING, CHOOSING, EVALUATING AND FORECASTING 
+
+
+# Split data into train and test
+```{r}
+# Split the  dataset into a train and test set, 
+# i.e. withhold the last 5 years as test data.
+
+# Set training data from 1992 to 2015
+NightsTotalAllDK_train <- NightsTotalAllDK %>%
+    filter_index("1992 Q1" ~ "2015 Q4")
+
+# Set training data from 2016 to 2020
+NightsTotalAllDK_test <- NightsTotalAllDK %>%
+    filter_index("2016 Q1" ~ "2020 Q4")
+
+####### FOR DATA WITH DIFFERENT GUEST NATIONALITY 
+# Set training data from 1992 to 2015
+NightsAllDKByGuestNationality_NotTotal_train <- NightsAllDKByGuestNationality_NotTotal %>%
+    filter_index("1992 Q1" ~ "2015 Q4")
+#range(NightsTotalAllDK_train$Quarter)
+
+# Set training data from 2016 to 2020
+NightsAllDKByGuestNationality_NotTotal_test <- NightsAllDKByGuestNationality_NotTotal %>%
+    filter_index("2016 Q1" ~ "2020 Q4")
+#range(NightsTotalAllDK_test$Quarter)
+```
+
+# Apply cross validation to test performance of models 
+```{r}
+NightsTotalAllDK_train_stretch <- NightsTotalAllDK_train %>% 
+  stretch_tsibble(.init = 3, .step = 1)
+
+fit_cv <- NightsTotalAllDK_train_stretch %>%
+  model(
+    Mean = MEAN(count), # 570.6
+    `Naïve` = NAIVE(count), #614.5
+    `Seasonal naïve` = SNAIVE(count), #12.7
+    RW = NAIVE(count ~ drift()), # 662.1
+    #ets = ETS(count),# 73.7 - warning not enough data to estimate this ets model
+    ts_lm = TSLM(count ~ trend() + season()) # 117.6
+  ) %>% 
+  forecast(h=1)  %>% 
+  accuracy(NightsTotalAllDK_train)
+
+fit_cv_output <- fit_cv %>% 
+  mutate(fit = "CV") %>% 
+  select(.model, fit, MAPE, RMSE) %>% 
+   arrange(MAPE, .by_group = TRUE)
+fit_cv_output
+
+
+# check performance of seasonal naive in forecasting 4 periods into the future, i.e. forecast demand for time t + 4 quarters/a year into the future. 
+
+#fc <- NightsTotalAllDK_train_stretch %>%
+#  model(`Seasonal naïve` = SNAIVE(count)) %>%
+#  forecast(h = 4) %>%
+#  group_by(.id) %>%
+#  mutate(h = row_number()) %>%
+#  ungroup()
+
+#fc %>%
+#  accuracy(NightsTotalAllDK_test, by = c("h", ".model")) %>%
+#  ggplot(aes(x = h, y = RMSE)) +
+#  geom_point()
+
+```
+
+
+# Test performance of seasonal naive model on test data 
+```{r}
+## Now that seasonal naive has been found to be best by cv, the model is used to forecast test data
+## Plot of seasonal naive 
+NightsTotalAllDK_fit <- NightsTotalAllDK_train %>%
+  model(`Seasonal naïve` = SNAIVE(count))
+
+# Generate forecasts for the last 5 years - 2015-2020
+NightsTotalAllDK_fc <- NightsTotalAllDK_fit %>%
+  forecast(NightsTotalAllDK_test) 
+
+# Plot the forecasts
+NightsTotalAllDK_fc %>%
+  autoplot(NightsTotalAllDK_train, level = NULL, color = "red") +
+  autolayer(
+      NightsTotalAllDK_test,
+      color = "grey58") +
+  labs(y = "Nights accomodation (millions)",
+       title = "Camp Site Activity Forecast with Seasonal Naive",
+       subtitle = "(1992-2020)") +
+  guides(colour = guide_legend(title = "Forecasts"))
+
+```
+
+#Perform residual diagnostic checks of model
+```{r}
+# for all data 
+NightsTotalAllDK %>%
+  model(SNAIVE(count)) %>%
+  gg_tsresiduals()
+# for test / data to be forecast
+NightsTotalAllDK_test %>%
+  model(SNAIVE(count)) %>%
+  gg_tsresiduals()
+```
+
+# FORECAST FUTURE CAMPING ACTIVITY - 5 YEARS AHEAD
+```{r}
+###### FORECAST fOR FUTURE CAMPING ACTIVTIY  #####
+NightsTotalAllDK %>%
+  model(SNAIVE(count)) %>%
+  forecast(h = "5 years") %>%
+  autoplot(NightsTotalAllDK, color =  "rosybrown3") +
+  labs(y = "Nights accomodation",
+       title = "Forecasting Future Demand of Camp Site Activity with Seasonal Naive",
+       subtitle = "(Observations: 1992-2020, Forecast: 2021-2025)") +
+  guides(colour = guide_legend(title = "Forecasts"))
+
+##################################################
+```
+
+# Plot of forecasts for all the models that was tested in cross validation fit to train and plotted against test
+```{r}
+#######  FOR TOTAL GUESTS AND OVERALL NIGHTS ACCOMODATION ALL OVER DK
+
+# Fit the models to training data
+NightsTotalAllDK_fit_allmod <- NightsTotalAllDK_train %>%
+  model(
+    Mean = MEAN(count),
+    `Naïve` = NAIVE(count),
+    `Seasonal naïve` = SNAIVE(count),
+    RW = NAIVE(count ~ drift()),
+    ts_lm = TSLM(count ~ trend() + season())
+  )
+
+# Generate forecasts for the last 5 years - 2015-2020
+NightsTotalAllDK_fc_allmod <- NightsTotalAllDK_fit_allmod %>% forecast(NightsTotalAllDK_test) 
+
+# Plot the forecasts
+NightsTotalAllDK_fc_allmod %>%
+  autoplot(NightsTotalAllDK_train, level = NULL) +
+  autolayer(
+      NightsTotalAllDK_test,
+      color = "black"
+  ) +
+  labs(y = "Nights accomodation",
+       title = "Camp Site Activity Forecasts",
+       subtitle = "(1992-2020)") +
+  guides(colour = guide_legend(title = "Forecasts"))
+
+
+
+#######  FOR DATA WITH DIFFERENT GUEST NATIONALITY 
+
+# Fit the models to training data
+NightsAllDKByGuestNationality_NotTotal_fit <- NightsAllDKByGuestNationality_NotTotal_train %>%
+  model(
+    Mean = MEAN(count),
+    `Naïve` = NAIVE(count),
+    `Seasonal naïve` = SNAIVE(count),
+    RW = NAIVE(count ~ drift()),
+    ts_lm = TSLM(count ~ trend() + season())
+  )
+
+# Generate forecasts for the last 5 years - 2015-2020
+NightsAllDKByGuestNationality_NotTotal_fc <- NightsAllDKByGuestNationality_NotTotal_fit %>% forecast(NightsAllDKByGuestNationality_NotTotal_test)
+
+# Plot the forecasts
+NightsAllDKByGuestNationality_NotTotal_fc %>%
+  autoplot(NightsAllDKByGuestNationality_NotTotal_train, level = NULL) +
+  autolayer(
+      NightsAllDKByGuestNationality_NotTotal_test,
+      color = "black"
+  ) +
+  labs(y = "Nights accomodation",
+       title = "Forecast of camp site activity by guest nationality",
+       subtitle = "(1992-2020)") +
+  guides(colour = guide_legend(title = "Forecasts"))
+
+
+```
+
